@@ -1,0 +1,4 @@
+# Provider versions from Airflow 2.11.2 official Python 3.11 constraints.
+apache-airflow-providers-google==20.0.0
+apache-airflow-providers-microsoft-azure==13.0.0
+apache-airflow-providers-postgres==6.6.0
