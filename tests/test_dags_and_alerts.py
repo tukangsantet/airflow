@@ -60,9 +60,20 @@ def test_daily_only_mode_disables_historical_catchup(
 
 def test_daily_pipeline_preserves_provider_order_and_quality_gates() -> None:
     module = importlib.import_module("dags.architron_monitoring_daily_pipeline")
-    assert set(module._HANDLER_STEPS.values()) == set(ALL_DAG_STEPS) - {"architron_monitoring_retention_cleanup.cleanup_database"}
+    active_steps = set(ALL_DAG_STEPS) - {
+        "architron_monitoring_retention_cleanup.cleanup_database",
+        # TEMPORARILY DISABLED in the daily DAG; built-in handler remains registered.
+        "architron_monitoring_gcp_security.scan",
+    }
+    assert set(module._HANDLER_STEPS.values()) == active_steps
     groups = dict(module._GROUPS)
     assert groups["azure_ingestion"].index("stage_files") < groups["azure_ingestion"].index("validate_schema")
+    assert {
+        ("azure_token_refresh.refresh", "gcp_inventory.scan"),
+        ("azure_token_refresh.refresh", "gcp_ingestion.extract_detailed"),
+        ("azure_token_refresh.refresh", "azure_ingestion.discover_blobs"),
+        ("azure_token_refresh.refresh", "fx_ingestion.fetch_rates"),
+    }.issubset(set(module._DEPENDENCIES))
     assert ("azure_ingestion.record_freshness", "normalization.normalize") in module._DEPENDENCIES
     assert ("data_quality.record_results", "reconciliation.provider_sources") in module._DEPENDENCIES
 

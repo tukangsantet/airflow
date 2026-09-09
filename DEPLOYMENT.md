@@ -45,6 +45,9 @@ bash scripts/bootstrap.sh
 # ARCHITRON_DAGS_SOURCE_PATH
 # ARCHITRON_DAG_PACKAGE_SOURCE_PATH
 
+# The daily DAG's first task runs this host-provided file before GCP/Azure provider work.
+test -r /opt/airflow/secrets/python/fetch_azure_token.py
+
 # Change AIRFLOW_PORT, bind address, worker concurrency, or admin settings if needed.
 # Validate interpolation without printing rendered secrets:
 docker compose config --quiet
@@ -52,7 +55,7 @@ docker compose config --quiet
 docker compose up -d --build
 ```
 
-The first start builds the custom image, migrates the Airflow metadata database, creates the initial Admin user, and starts all services. The initialization is idempotent: subsequent `docker compose up` runs do not recreate the existing Admin user.
+The first start creates the configured host directories, builds the custom image, migrates the Airflow metadata database, creates the initial Admin user, and starts all services. The initialization is idempotent: subsequent `docker compose up` runs do not recreate the existing Admin user.
 
 Open:
 
@@ -61,6 +64,8 @@ http://<onprem-host>:<AIRFLOW_PORT>
 ```
 
 The initial username and password are in the local `.env`. Change the password through Airflow after the first login according to your policy.
+
+The bootstrap script sets `AIRFLOW_UID` to the current non-root host user's numeric UID so Airflow can write to the host-mounted log directory. If `.env` is created manually, set it with `id -u` and ensure the configured log directory is writable by that UID.
 
 ## Parallel execution and scaling
 
@@ -103,6 +108,15 @@ The supported deployment knobs are in `.env.example`:
 
 - `ARCHITRON_DAGS_SOURCE_PATH`: host path to the `dags/` directory in the separate Architron repo.
 - `ARCHITRON_DAG_PACKAGE_SOURCE_PATH`: host path to the `architron_monitoring_airflow/` package in that repo.
+- `AIRFLOW_LOGS_PATH`: host directory for scheduler, webserver, worker, triggerer, and task logs.
+- `POSTGRES_DATA_PATH`: host directory for Airflow metadata and Celery result backend state.
+- `REDIS_DATA_PATH`: host directory for Redis broker persistence.
+- `AIRFLOW_CONFIG_PATH`: host directory for optional non-secret Airflow config/local settings; mounted read-only.
+- `AIRFLOW_PLUGINS_PATH`: host directory for optional custom plugins; mounted read-only.
+- `AIRFLOW_INCLUDE_PATH`: host directory for optional SQL/templates/assets; mounted read-only.
+- `AIRFLOW_SECRETS_PATH`: host directory containing `python/fetch_azure_token.py` and any restricted Azure token/cache state; mounted at `/opt/airflow/secrets` for all Airflow services.
+- `ARCHITRON_AZURE_TOKEN_REFRESH_SCRIPT`: absolute container path to the host-mounted refresh script; default `/opt/airflow/secrets/python/fetch_azure_token.py`.
+- `ARCHITRON_AZURE_TOKEN_REFRESH_TIMEOUT_SECONDS`: maximum refresh runtime; default `300` seconds.
 - `AIRFLOW_PORT`: host port exposed for the web UI/API; default `8090`, not Airflow's default host port.
 - `AIRFLOW_BIND_ADDRESS`: host bind address; use `127.0.0.1` behind a reverse proxy or `0.0.0.0` only when firewall policy permits.
 - `AIRFLOW_WORKER_CONCURRENCY`: Celery tasks per worker process.
@@ -114,13 +128,19 @@ If a manually chosen password contains URL-reserved characters, URL-encode it be
 
 ## Persistence and backups
 
-Named volumes persist metadata and logs across normal container recreation:
+The Compose file uses host bind mounts configured in `.env`, so data remains visible under the installer checkout and survives container recreation:
 
-- `postgres_data`: Airflow metadata and Celery result backend state.
-- `redis_data`: Redis append-only broker data.
-- `airflow_logs`: task and scheduler logs.
+- `${AIRFLOW_LOGS_PATH}` → `/opt/airflow/logs`: task, scheduler, webserver, worker, and triggerer logs.
+- `${POSTGRES_DATA_PATH}` → `/var/lib/postgresql/data`: Airflow metadata and Celery result backend state; **must be backed up**.
+- `${REDIS_DATA_PATH}` → `/data`: Redis append-only broker persistence; back up if queued-task recovery is required.
+- `${AIRFLOW_CONFIG_PATH}` → `/opt/airflow/config`: optional non-secret Airflow configuration/local settings, read-only.
+- `${AIRFLOW_PLUGINS_PATH}` → `/opt/airflow/plugins`: optional custom plugins, read-only inside containers.
+- `${AIRFLOW_INCLUDE_PATH}` → `/opt/airflow/include`: optional SQL/templates/assets, read-only.
+- `${AIRFLOW_SECRETS_PATH}` → `/opt/airflow/secrets`: operator-managed Azure refresh script and restricted token/cache state; mounted for every Airflow service. This host directory is intentionally not created by the bootstrap script and must be prepared outside Git.
+- `${ARCHITRON_DAGS_SOURCE_PATH}` → `/opt/airflow/dags`: DAG entrypoints from the separate Architron repo, read-only.
+- `${ARCHITRON_DAG_PACKAGE_SOURCE_PATH}` → `/opt/airflow/dags/architron_monitoring_airflow`: reusable DAG package, read-only.
 
-Back up PostgreSQL using a tested `pg_dump` policy. Treat the Fernet key as a required backup secret: losing it makes encrypted Airflow connection values unreadable. Do not put provider credentials in DAG source, Variables, task parameters, logs, or Git.
+Back up PostgreSQL using a tested `pg_dump` policy and back up the configured host data directories according to the recovery plan. Treat the Fernet key as a required backup secret: losing it makes encrypted Airflow connection values unreadable. Do not put provider credentials in DAG source, Variables, task parameters, logs, or Git.
 
 ## Production notes
 

@@ -36,8 +36,12 @@ x-airflow-common: &airflow-common
     - ${ARCHITRON_DAGS_SOURCE_PATH:-../architron/airflow/dags}:/opt/airflow/dags:ro
     - ${ARCHITRON_DAG_PACKAGE_SOURCE_PATH:-../architron/airflow/architron_monitoring_airflow}:/opt/airflow/dags/architron_monitoring_airflow:ro
     - ${AIRFLOW_LOGS_PATH:-./logs}:/opt/airflow/logs
+    - ${AIRFLOW_CONFIG_PATH:-./config}:/opt/airflow/config:ro
     - ${AIRFLOW_PLUGINS_PATH:-./plugins}:/opt/airflow/plugins:ro
     - ${AIRFLOW_INCLUDE_PATH:-./include}:/opt/airflow/include:ro
+    # Host-provided Azure refresh script and its token/cache state. Keep this
+    # host directory restricted; it is RW because the refresh script may write state.
+    - ${AIRFLOW_SECRETS_PATH:-/opt/airflow/secrets}:/opt/airflow/secrets
   user: "${AIRFLOW_UID:-50000}:0"
   restart: unless-stopped
 

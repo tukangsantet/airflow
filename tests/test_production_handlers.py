@@ -4,8 +4,11 @@ import csv
 import gzip
 import io
 import json
+import subprocess
+import sys
 import zlib
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
@@ -28,6 +31,7 @@ from architron_monitoring_airflow.production import (
     _discover_azure,
     _effective_interval,
     _extract_gcp,
+    _refresh_azure_token,
     _sql_for_step,
     _stage_azure,
     _validated_context,
@@ -70,7 +74,7 @@ def _payload() -> str:
 def test_every_dag_task_has_a_builtin_handler() -> None:
     handlers = builtin_handlers()
     assert set(handlers) == set(ALL_DAG_STEPS)
-    assert len(handlers) == 33
+    assert len(handlers) == 34
     assert all(callable(handler) for handler in handlers.values())
     assert not any(
         marker in handlers
@@ -90,6 +94,48 @@ def test_builtin_is_default_and_override_must_be_explicit(monkeypatch: pytest.Mo
     )
     # Environment mappings are ignored unless the trusted override switch is enabled.
     assert resolve_handler(step) is builtin_handlers()[step]
+
+
+def test_azure_token_refresh_runs_host_script_without_capturing_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    script = tmp_path / "fetch_azure_token.py"
+    script.write_text("print('token-must-not-reach-airflow-log')\n")
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> None:
+        calls.append((command, kwargs))
+
+    monkeypatch.setenv("ARCHITRON_AZURE_TOKEN_REFRESH_SCRIPT", str(script))
+    monkeypatch.setattr("architron_monitoring_airflow.production.subprocess.run", fake_run)
+
+    _refresh_azure_token()
+
+    command, kwargs = calls[0]
+    assert command == [sys.executable, str(script)]
+    assert kwargs["check"] is True
+    assert kwargs["stdin"] is subprocess.DEVNULL
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.DEVNULL
+    assert kwargs["timeout"] == 300
+
+
+def test_refresh_step_does_not_initialize_provider_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "architron_monitoring_airflow.production._refresh_azure_token",
+        lambda: calls.append("refreshed"),
+    )
+    monkeypatch.setattr(
+        "architron_monitoring_airflow.production._runtime_loader",
+        lambda: pytest.fail("provider runtime must not load before Azure refresh"),
+    )
+
+    dispatch_step("architron_monitoring_refresh_azure_token.refresh")
+
+    assert calls == ["refreshed"]
 
 
 def test_manual_backfill_period_overrides_airflow_interval() -> None:

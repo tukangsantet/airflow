@@ -11,6 +11,9 @@ venv/
 .env
 .env.*
 !.env.example
+logs/
+data/
+secrets/
 *.log
 
 # Docker/build metadata

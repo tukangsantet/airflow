@@ -27,10 +27,12 @@ class _Response:
 
 class _Session:
     def __init__(self, credentials: object):
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, str, dict[str, object]]] = []
 
     def request(self, method: str, url: str, **kwargs: object) -> _Response:
-        self.calls.append((method, url))
+        raw_params = kwargs.get("params")
+        params = raw_params.copy() if isinstance(raw_params, dict) else {}
+        self.calls.append((method, url, params))
         if "cloudasset" in url:
             return _Response(
                 {
@@ -112,8 +114,10 @@ def test_scanner_collects_four_views_and_uses_parameterized_version_function(mon
     assert service_account_payload["has_keys"] is True
     assert service_account_payload["keys"][0]["keyType"] == "USER_MANAGED"
     assert "privateKeyData" not in service_account_payload["keys"][0]
-    assert any(
-        url.endswith("/serviceAccounts/sa%40example.com/keys")
-        for _, url in getattr(scanner.session, "calls", [])
-    )
+    key_calls = [
+        (url, params)
+        for _, url, params in getattr(scanner.session, "calls", [])
+        if url.endswith("/serviceAccounts/sa%40example.com/keys")
+    ]
+    assert key_calls == [("https://iam.googleapis.com/v1/projects/demo-12345/serviceAccounts/sa%40example.com/keys", {})]
     assert all("secret" not in json.dumps(command.parameters, default=str).lower() for command in postgres.commands)
