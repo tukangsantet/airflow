@@ -8,7 +8,7 @@ ARG PYTHON_VERSION=3.11
 USER airflow
 
 # Keep provider dependencies aligned with the exact Airflow/Python image.
-COPY requirements.txt /tmp/requirements.txt
+COPY --chown=airflow:root requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir \
       --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt" \
       -r /tmp/requirements.txt \
@@ -17,4 +17,4 @@ RUN pip install --no-cache-dir \
 # DAG source is mounted read-only from the separate Architron repository by
 # docker-compose.yml. Keeping it outside this image makes the installer repo
 # independent from the application/DAG repo.
-ENV PYTHONPATH=/opt/airflow/dags
+ENV PYTHONPATH=/opt/airflow/dags:/opt/airflow

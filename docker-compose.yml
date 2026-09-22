@@ -32,7 +32,7 @@ x-airflow-common: &airflow-common
     # These two mounts point to the separate Architron source repository.
     # Defaults assume /workspace/airflow and /workspace/architron are siblings.
     - ${ARCHITRON_DAGS_SOURCE_PATH:-../architron/airflow/dags}:/opt/airflow/dags:ro
-    - ${ARCHITRON_DAG_PACKAGE_SOURCE_PATH:-../architron/airflow/architron_monitoring_airflow}:/opt/airflow/dags/architron_monitoring_airflow:ro
+    - ${ARCHITRON_DAG_PACKAGE_SOURCE_PATH:-../architron/airflow/architron_monitoring_airflow}:/opt/airflow/architron_monitoring_airflow:ro
     - ${AIRFLOW_LOGS_PATH:-./logs}:/opt/airflow/logs
     - ${AIRFLOW_CONFIG_PATH:-./config}:/opt/airflow/config:ro
     - ${AIRFLOW_PLUGINS_PATH:-./plugins}:/opt/airflow/plugins:ro
