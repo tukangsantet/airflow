@@ -16,6 +16,17 @@ env_value() {
   return 1
 }
 
+validate_external_database_env() {
+  local key value
+  for key in AIRFLOW_DB_HOST AIRFLOW_DB_PORT AIRFLOW_DB_NAME AIRFLOW_DB_USER AIRFLOW_DB_PASSWORD; do
+    value="$(env_value "$key" || true)"
+    if [[ -z "$value" || "$value" == "CHANGE_ME" ]]; then
+      echo "ERROR: .env must define a real ${key} for the external PostgreSQL server." >&2
+      return 1
+    fi
+  done
+}
+
 prepare_host_dirs() {
   # Use the host user's UID for Airflow's writable bind-mounted log directory.
   # When bootstrap is run as root, retain the image default and chown logs below.
@@ -25,21 +36,19 @@ prepare_host_dirs() {
   fi
 
   airflow_logs_path="$(env_value AIRFLOW_LOGS_PATH || printf './logs')"
-  postgres_data_path="$(env_value POSTGRES_DATA_PATH || printf './data/postgres')"
-  redis_data_path="$(env_value REDIS_DATA_PATH || printf './data/redis')"
   airflow_config_path="$(env_value AIRFLOW_CONFIG_PATH || printf './config')"
   airflow_plugins_path="$(env_value AIRFLOW_PLUGINS_PATH || printf './plugins')"
   airflow_include_path="$(env_value AIRFLOW_INCLUDE_PATH || printf './include')"
 
-  mkdir -p "$airflow_logs_path" "$postgres_data_path" "$redis_data_path" "$airflow_config_path" "$airflow_plugins_path" "$airflow_include_path"
+  mkdir -p "$airflow_logs_path" "$airflow_config_path" "$airflow_plugins_path" "$airflow_include_path"
   chmod 750 "$airflow_logs_path" "$airflow_config_path" "$airflow_plugins_path" "$airflow_include_path"
-  chmod 700 "$postgres_data_path" "$redis_data_path"
   if [[ "$(id -u)" == "0" ]]; then
     chown "${host_uid}:0" "$airflow_logs_path"
   fi
 }
 
 if [[ -f .env ]]; then
+  validate_external_database_env
   prepare_host_dirs
   echo ".env already exists; secrets were not changed. Host mount directories are ready."
   exit 0
@@ -61,16 +70,12 @@ random_hex() {
 fernet_key="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
 airflow_secret="$(random_hex)"
 admin_password="$(random_hex)"
-postgres_password="$(random_hex)"
-redis_password="$(random_hex)"
 
 sed -i \
   -e "s|^AIRFLOW_UID=.*|AIRFLOW_UID=${host_uid}|" \
   -e "s|^AIRFLOW_FERNET_KEY=.*|AIRFLOW_FERNET_KEY=${fernet_key}|" \
   -e "s|^AIRFLOW_SECRET_KEY=.*|AIRFLOW_SECRET_KEY=${airflow_secret}|" \
   -e "s|^_AIRFLOW_WWW_USER_PASSWORD=.*|_AIRFLOW_WWW_USER_PASSWORD=${admin_password}|" \
-  -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${postgres_password}|" \
-  -e "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=${redis_password}|" \
   .env
 
 chmod 600 .env

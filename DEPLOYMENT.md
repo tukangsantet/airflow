@@ -16,19 +16,18 @@ Expected on-premises layout:
 It runs:
 
 - Apache Airflow **2.11.2** on Python 3.11.
-- `CeleryExecutor` for parallel task execution.
-- PostgreSQL 16 for Airflow metadata and Celery result state.
-- Redis 7.2 as the Celery broker.
-- Scheduler, webserver, worker, triggerer, and one-time database/user initializer.
+- `LocalExecutor` for parallel task execution inside the scheduler container.
+- An existing on-prem PostgreSQL server, published on host port `5434`, for Airflow metadata.
+- Scheduler, webserver, triggerer, and one-time database/user initializer.
 
-The webserver listens on the container's normal `8080`, but the host port is configurable and defaults to **8090**. PostgreSQL and Redis are intentionally not published to the host.
+The webserver listens on the container's normal `8080`, but the host port is configurable and defaults to **8090**. This Compose project does not create PostgreSQL or Redis; it connects to the existing PostgreSQL server through `host.docker.internal:5434` by default.
 
 ## Prerequisites
 
 On the on-prem Ubuntu host, install:
 
 - Docker Engine with the Compose v2 plugin.
-- At least 4 GB RAM available for the Compose project; 8 GB is preferable for provider libraries and multiple workers.
+- At least 4 GB RAM available for the Compose project; 8 GB is preferable for provider libraries and parallel LocalExecutor tasks.
 - Outbound HTTPS access to pull images and download the official Airflow constraints file during image build.
 - A firewall rule allowing the selected `AIRFLOW_PORT` only from the intended admin network.
 
@@ -44,11 +43,17 @@ bash scripts/bootstrap.sh
 # Adjust these two values in .env if the repositories are elsewhere:
 # ARCHITRON_DAGS_SOURCE_PATH
 # ARCHITRON_DAG_PACKAGE_SOURCE_PATH
+# Set the existing PostgreSQL connection in .env:
+# AIRFLOW_DB_HOST=host.docker.internal
+# AIRFLOW_DB_PORT=5434
+# AIRFLOW_DB_NAME=airflow
+# AIRFLOW_DB_USER=airflow
+# AIRFLOW_DB_PASSWORD=<existing-postgres-password>
 
 # The daily DAG's first task runs this host-provided file before GCP/Azure provider work.
 test -r /opt/airflow/secrets/python/fetch_azure_token.py
 
-# Change AIRFLOW_PORT, bind address, worker concurrency, or admin settings if needed.
+# Change AIRFLOW_PORT, bind address, parallelism, or admin settings if needed.
 # Validate interpolation without printing rendered secrets:
 docker compose config --quiet
 
@@ -69,16 +74,7 @@ The bootstrap script sets `AIRFLOW_UID` to the current non-root host user's nume
 
 ## Parallel execution and scaling
 
-`CeleryExecutor` means the scheduler publishes tasks to Redis and workers execute them independently. A single worker has `AIRFLOW_WORKER_CONCURRENCY=4` by default, so up to four Celery tasks can execute concurrently, subject to DAG/task limits and available CPU/memory.
-
-For more workers:
-
-```bash
-# AIRFLOW_WORKER_REPLICAS is documented in .env; Compose scaling is explicit.
-docker compose up -d --scale airflow-worker=2
-```
-
-The DAG itself also controls `parallelism`, task dependencies, retries, and `max_active_runs`. Increasing worker count cannot bypass those DAG-level limits.
+`LocalExecutor` runs task processes from the scheduler container. Configure `AIRFLOW_PARALLELISM` and `AIRFLOW_MAX_ACTIVE_TASKS_PER_DAG` according to the available CPU and memory. The DAG itself also controls task dependencies, retries, and `max_active_runs`.
 
 ## Operations
 
@@ -87,20 +83,17 @@ The DAG itself also controls `parallelism`, task dependencies, retries, and `max
 docker compose ps
 docker compose logs --tail=100 airflow-init
 docker compose logs --tail=100 airflow-scheduler
-docker compose logs --tail=100 airflow-worker
+docker compose logs --tail=100 airflow-triggerer
 
 # Health endpoint and DAG listing
 curl --fail "http://127.0.0.1:${AIRFLOW_PORT:-8090}/health"
 docker compose exec airflow-scheduler airflow dags list
 
-# Stop containers but retain PostgreSQL/Redis/log volumes
+# Stop Airflow containers; the external PostgreSQL service is not touched.
 docker compose down
-
-# Stop and remove all data (DESTRUCTIVE; requires explicit operator decision)
-docker compose down -v
 ```
 
-Use `docker compose up -d --build` after changing `Dockerfile` or `requirements.txt`. DAG changes are read from the mounted Architron repository; restart the affected scheduler/worker containers if an immediate reload is needed. A rebuild is not required for ordinary DAG source changes.
+Use `docker compose up -d --build` after changing `Dockerfile` or `requirements.txt`. DAG changes are read from the mounted Architron repository; restart the scheduler if an immediate reload is needed. A rebuild is not required for ordinary DAG source changes.
 
 ## Configuration
 
@@ -108,9 +101,11 @@ The supported deployment knobs are in `.env.example`:
 
 - `ARCHITRON_DAGS_SOURCE_PATH`: host path to the `dags/` directory in the separate Architron repo.
 - `ARCHITRON_DAG_PACKAGE_SOURCE_PATH`: host path to the `architron_monitoring_airflow/` package in that repo.
-- `AIRFLOW_LOGS_PATH`: host directory for scheduler, webserver, worker, triggerer, and task logs.
-- `POSTGRES_DATA_PATH`: host directory for Airflow metadata and Celery result backend state.
-- `REDIS_DATA_PATH`: host directory for Redis broker persistence.
+- `AIRFLOW_LOGS_PATH`: host directory for scheduler, webserver, triggerer, and task logs.
+- `AIRFLOW_DB_HOST`: hostname reachable from the Airflow containers; defaults to `host.docker.internal`.
+- `AIRFLOW_DB_PORT`: external PostgreSQL host port; defaults to `5434`.
+- `AIRFLOW_DB_NAME`: dedicated Airflow metadata database; defaults to `airflow`.
+- `AIRFLOW_DB_USER` / `AIRFLOW_DB_PASSWORD`: Airflow metadata database credentials.
 - `AIRFLOW_CONFIG_PATH`: host directory for optional non-secret Airflow config/local settings; mounted read-only.
 - `AIRFLOW_PLUGINS_PATH`: host directory for optional custom plugins; mounted read-only.
 - `AIRFLOW_INCLUDE_PATH`: host directory for optional SQL/templates/assets; mounted read-only.
@@ -119,20 +114,18 @@ The supported deployment knobs are in `.env.example`:
 - `ARCHITRON_AZURE_TOKEN_REFRESH_TIMEOUT_SECONDS`: maximum refresh runtime; default `300` seconds.
 - `AIRFLOW_PORT`: host port exposed for the web UI/API; default `8090`, not Airflow's default host port.
 - `AIRFLOW_BIND_ADDRESS`: host bind address; use `127.0.0.1` behind a reverse proxy or `0.0.0.0` only when firewall policy permits.
-- `AIRFLOW_WORKER_CONCURRENCY`: Celery tasks per worker process.
 - `AIRFLOW_PARALLELISM`: global Airflow task parallelism.
 - `AIRFLOW_MAX_ACTIVE_TASKS_PER_DAG`: per-DAG active task limit.
-- PostgreSQL/Redis credentials and Airflow Fernet/webserver keys.
+- External PostgreSQL credentials and Airflow Fernet/webserver keys.
 
 If a manually chosen password contains URL-reserved characters, URL-encode it before using it in the SQLAlchemy connection string, or use the hex values generated by `bootstrap.sh`.
 
 ## Persistence and backups
 
-The Compose file uses host bind mounts configured in `.env`, so data remains visible under the installer checkout and survives container recreation:
+The Compose file uses host bind mounts configured in `.env` for logs and source/config assets. Airflow metadata is stored in the external PostgreSQL deployment:
 
-- `${AIRFLOW_LOGS_PATH}` → `/opt/airflow/logs`: task, scheduler, webserver, worker, and triggerer logs.
-- `${POSTGRES_DATA_PATH}` → `/var/lib/postgresql/data`: Airflow metadata and Celery result backend state; **must be backed up**.
-- `${REDIS_DATA_PATH}` → `/data`: Redis append-only broker persistence; back up if queued-task recovery is required.
+- `${AIRFLOW_LOGS_PATH}` → `/opt/airflow/logs`: task, scheduler, webserver, and triggerer logs.
+- External PostgreSQL database configured by `AIRFLOW_DB_*`: Airflow metadata; **must be backed up**.
 - `${AIRFLOW_CONFIG_PATH}` → `/opt/airflow/config`: optional non-secret Airflow configuration/local settings, read-only.
 - `${AIRFLOW_PLUGINS_PATH}` → `/opt/airflow/plugins`: optional custom plugins, read-only inside containers.
 - `${AIRFLOW_INCLUDE_PATH}` → `/opt/airflow/include`: optional SQL/templates/assets, read-only.
@@ -144,9 +137,9 @@ Back up PostgreSQL using a tested `pg_dump` policy and back up the configured ho
 
 ## Production notes
 
-- This Compose file does not expose PostgreSQL or Redis. Add host port mappings only with an explicit network/security requirement.
+- This Compose file does not create or expose PostgreSQL or Redis. The existing PostgreSQL service must be reachable at the configured host and port.
 - Put TLS/reverse proxy authentication in front of the webserver when it is reachable beyond localhost. Airflow's built-in login is not a substitute for network controls.
 - Keep the initial `.env` permissions at `0600` and restrict host access to the Docker operator.
-- The Compose stack has no Flower service or public broker endpoint by default.
+- The Compose stack has no Celery broker, worker fleet, or Flower service.
 - `docker compose config --quiet` validates rendered YAML but does not prove image pulls, database migrations, provider credentials, source repository paths, or external cloud API access.
-- Test a disposable PostgreSQL volume and a sample DAG run before production cutover. Do not use `docker compose down -v` on a production stack.
+- Test a disposable external PostgreSQL database and a sample DAG run before production cutover. Do not delete the external PostgreSQL database during Airflow maintenance.

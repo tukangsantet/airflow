@@ -1,6 +1,6 @@
 # Airflow installer repository
 
-Docker Compose deployment for Apache Airflow **2.11.2** with `CeleryExecutor`, PostgreSQL metadata, Redis broker, and parallel workers.
+Docker Compose deployment for Apache Airflow **2.11.2** with `LocalExecutor`. The Airflow metadata database is an existing on-prem PostgreSQL server published on host port `5434`; this Compose project does not create PostgreSQL or Redis containers.
 
 The DAG source is intentionally maintained in a separate repository. This repository contains only the Airflow runtime/installer assets; it does not copy or vendor the Architron DAG source.
 
@@ -31,15 +31,19 @@ Adjust them when the two repositories are not siblings.
 ```bash
 cd /workspace/airflow
 bash scripts/bootstrap.sh
+# Edit .env and set AIRFLOW_DB_HOST, AIRFLOW_DB_PORT=5434,
+# AIRFLOW_DB_NAME, AIRFLOW_DB_USER, and AIRFLOW_DB_PASSWORD.
 docker compose config --quiet
 docker compose up -d --build
 ```
 
-The web UI host port is controlled by `AIRFLOW_PORT` and defaults to `8090`, not the default host port `8080`. Logs and PostgreSQL/Redis data are persisted in host directories configured by `AIRFLOW_LOGS_PATH`, `POSTGRES_DATA_PATH`, and `REDIS_DATA_PATH`. DAGs are mounted read-only from the separate `architron` repository; optional non-secret config, plugins, and include assets are also host-mounted read-only.
+The web UI host port is controlled by `AIRFLOW_PORT` and defaults to `8090`, not the default host port `8080`. Only Airflow logs and optional configuration assets are mounted from this repository. PostgreSQL metadata is stored in the existing external PostgreSQL deployment. DAGs are mounted read-only from the separate `architron` repository; optional non-secret config, plugins, and include assets are also host-mounted read-only.
+
+The external PostgreSQL server must contain a dedicated Airflow metadata database (normally `airflow`) and user. Do not use the Architron application database as Airflow's metadata database. Configure `AIRFLOW_DB_HOST`, `AIRFLOW_DB_PORT`, `AIRFLOW_DB_NAME`, `AIRFLOW_DB_USER`, and `AIRFLOW_DB_PASSWORD` in `.env`.
 
 ## Azure token refresh
 
-The daily DAG starts with the `azure_token_refresh.refresh` task as a global identity bootstrap. It runs the operator-provided host-mounted script at `/opt/airflow/secrets/python/fetch_azure_token.py`; the script is not copied into or installed in the Airflow image. `AIRFLOW_SECRETS_PATH` controls the host directory mounted at `/opt/airflow/secrets` for every scheduler/worker container. The refresh task gates the GCP inventory, GCP ingestion, Azure ingestion, and FX provider roots, so the refreshed Azure token is available before GCP Workload Identity Federation credentials are initialized.
+The daily DAG starts with the `azure_token_refresh.refresh` task as a global identity bootstrap. It runs the operator-provided host-mounted script at `/opt/airflow/secrets/python/fetch_azure_token.py`; the script is not copied into or installed in the Airflow image. `AIRFLOW_SECRETS_PATH` controls the host directory mounted at `/opt/airflow/secrets` for every Airflow service. The refresh task gates the GCP inventory, GCP ingestion, Azure ingestion, and FX provider roots, so the refreshed Azure token is available before GCP Workload Identity Federation credentials are initialized.
 
 Before starting Compose, verify the host file exists and that the Airflow container UID can read the script and write any token/cache state it needs:
 
